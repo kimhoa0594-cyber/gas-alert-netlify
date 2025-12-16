@@ -38,16 +38,16 @@
         </div>
 
         <div class="door-control">
-            <button id="doorButton" class="door-close" onclick="toggleDoor()">ĐÓNG CỬA</button>
+            <button id="doorButton" class="door-close" onclick="toggleDoor()">MỞ CỬA</button>
         </div>
 
         <div class="system-message" id="systemMessage">Trạng thái: Đang kết nối...</div>
     </div>
 
     <script>
-        // --- CẤU HÌNH MQTT (PHẢI TRÙNG VỚI ESP32) ---
+        // --- CẤU HÌNH MQTT (KHỚP VỚI PUBLIC BROKER) ---
         const MQTT_BROKER = "broker.hivemq.com";
-        const MQTT_PORT = 8000; // WebSocket port cho HiveMQ
+        const MQTT_PORT = 8000; // Cổng WebSocket không bảo mật tiêu chuẩn
         const TOPIC_STATUS = "gas_alert/status"; 
         const TOPIC_CONTROL = "gas_alert/control";
         
@@ -57,7 +57,7 @@
 
         // Hàm kết nối MQTT
         function connectMQTT() {
-            // Client ID phải là duy nhất
+            // Client ID ngẫu nhiên cho Web
             client = new Paho.MQTT.Client(MQTT_BROKER, Number(MQTT_PORT), "/ws", "web_gas_client_" + parseInt(Math.random() * 10000));
 
             client.onConnectionLost = onConnectionLost;
@@ -65,7 +65,7 @@
 
             client.connect({
                 onSuccess: onConnect,
-                useSSL: false
+                useSSL: false // KHÔNG SỬ DỤNG SSL/TLS
             });
         }
 
@@ -79,7 +79,7 @@
             if (responseObject.errorCode !== 0) {
                 console.log("onConnectionLost:" + responseObject.errorMessage);
                 document.getElementById('systemMessage').innerText = "Trạng thái: Mất kết nối, đang thử lại...";
-                setTimeout(connectMQTT, 5000); // Thử kết nối lại sau 5 giây
+                setTimeout(connectMQTT, 5000); 
             }
         }
 
@@ -89,9 +89,8 @@
                     const data = JSON.parse(message.payloadString);
                     updateUI(data.gas, data.status);
                     
-                    // Cập nhật trạng thái cửa nếu hệ thống tự động cưỡng chế mở
                     if (data.status === 2 && doorState === 0) {
-                        doorState = 1; // Hệ thống buộc mở
+                        doorState = 1; 
                         updateDoorButton();
                     }
                 } catch (e) {
@@ -103,25 +102,20 @@
         function updateUI(gas, status) {
             currentSystemStatus = status;
 
-            // 1. Cập nhật Giá trị Gas
             document.getElementById('gasValue').innerText = gas;
 
-            // 2. Reset Indicators
             const indicators = ['safeIndicator', 'warningIndicator', 'dangerIndicator'];
             indicators.forEach(id => document.getElementById(id).classList.remove('safe', 'warning', 'danger'));
 
-            // 3. Cập nhật Trạng thái Hệ thống
             let statusText = "Trạng thái: ";
             if (status === 0) {
                 document.getElementById('safeIndicator').classList.add('safe');
-                statusText += "AN TOÀN";
-                // Cho phép điều khiển cửa
+                statusText += "AN TOÀN.";
                 document.getElementById('doorButton').classList.remove('door-disabled');
                 document.getElementById('doorButton').disabled = false;
             } else if (status === 1) {
                 document.getElementById('warningIndicator').classList.add('warning');
-                statusText += "CẢNH BÁO SƠ CẤP!";
-                // Buộc đóng cửa nếu đang ở trạng thái Cảnh báo Sơ cấp (Logic từ code Arduino) [cite: 76]
+                statusText += "CẢNH BÁO SƠ CẤP! Vui lòng kiểm tra.";
                 doorState = 0; 
                 updateDoorButton();
                 document.getElementById('doorButton').classList.add('door-disabled');
@@ -129,7 +123,6 @@
             } else if (status === 2) {
                 document.getElementById('dangerIndicator').classList.add('danger');
                 statusText += "NGUY HIỂM!!! Cửa buộc phải mở.";
-                // Buộc mở cửa khi Nguy hiểm [cite: 70]
                 doorState = 1; 
                 updateDoorButton();
                 document.getElementById('doorButton').classList.add('door-disabled');
@@ -157,20 +150,17 @@
                 return;
             }
 
-            const newDoorState = doorState === 0 ? 1 : 0;
+            const newDoorState = (doorState === 0 || doorState === -1) ? 1 : 0; 
             let command = newDoorState === 1 ? "OPEN" : "CLOSE";
 
-            // Gửi lệnh qua MQTT
             const message = new Paho.MQTT.Message(command);
             message.destinationName = TOPIC_CONTROL;
             client.send(message);
 
-            // Cập nhật trạng thái chờ phản hồi từ ESP32/Arduino
             doorState = newDoorState;
             updateDoorButton();
         }
 
-        // Bắt đầu ứng dụng
         window.onload = function() {
             updateDoorButton();
             connectMQTT();
