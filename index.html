@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hệ thống Cảnh báo Gas IoT</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.0.1/mqttws31.min.js" type="text/javascript"></script>
+    <style>
+        body { font-family: Arial, sans-serif; display: flex; flex-direction: column; align-items: center; padding: 20px; background-color: #f4f4f9; }
+        .container { background: #fff; padding: 30px; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); width: 100%; max-width: 400px; text-align: center; }
+        h1 { color: #333; }
+        .gas-gauge { position: relative; width: 150px; height: 150px; margin: 20px auto; border-radius: 50%; border: 15px solid #ccc; display: flex; align-items: center; justify-content: center; font-size: 40px; font-weight: bold; }
+        .status-indicators { display: flex; justify-content: space-around; margin: 20px 0; }
+        .indicator { width: 80px; height: 80px; border-radius: 50%; border: 3px solid #ccc; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: bold; color: #555; }
+        .safe { background-color: #d4edda; border-color: #28a745; }
+        .warning { background-color: #fff3cd; border-color: #ffc107; }
+        .danger { background-color: #f8d7da; border-color: #dc3545; }
+        .system-message { padding: 10px; margin-top: 20px; border-radius: 4px; font-weight: bold; background-color: #e9ecef; color: #333; }
+        .door-control { margin-top: 30px; }
+        #doorButton { padding: 15px 30px; font-size: 20px; cursor: pointer; border: none; border-radius: 5px; color: white; transition: background-color 0.3s; width: 100%; }
+        .door-open { background-color: #28a745; }
+        .door-close { background-color: #dc3545; }
+        .door-disabled { background-color: #6c757d; cursor: not-allowed; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Cảnh báo Rò rỉ Khí Gas</h1>
+        <div class="gas-gauge" id="gasGauge">
+            <span id="gasValue">0</span>
+        </div>
+        <p>Giá trị Cảm biến (0 - 4095)</p>
+
+        <div class="status-indicators">
+            <div class="indicator" id="safeIndicator">An toàn</div>
+            <div class="indicator" id="warningIndicator">Cảnh báo Sơ cấp</div>
+            <div class="indicator" id="dangerIndicator">Nguy hiểm</div>
+        </div>
+
+        <div class="door-control">
+            <button id="doorButton" class="door-close" onclick="toggleDoor()">ĐÓNG CỬA</button>
+        </div>
+
+        <div class="system-message" id="systemMessage">Trạng thái: Đang kết nối...</div>
+    </div>
+
+    <script>
+        // --- CẤU HÌNH MQTT (PHẢI TRÙNG VỚI ESP32) ---
+        const MQTT_BROKER = "broker.hivemq.com";
+        const MQTT_PORT = 8000; // WebSocket port cho HiveMQ
+        const TOPIC_STATUS = "gas_alert/status"; 
+        const TOPIC_CONTROL = "gas_alert/control";
+        
+        let client;
+        let doorState = 0; // 0: Đóng, 1: Mở (Mặc định: Đóng)
+        let currentSystemStatus = -1; // -1: Chưa xác định, 0: An toàn, 1: Cảnh báo, 2: Nguy hiểm
+
+        // Hàm kết nối MQTT
+        function connectMQTT() {
+            // Client ID phải là duy nhất
+            client = new Paho.MQTT.Client(MQTT_BROKER, Number(MQTT_PORT), "/ws", "web_gas_client_" + parseInt(Math.random() * 10000));
+
+            client.onConnectionLost = onConnectionLost;
+            client.onMessageArrived = onMessageArrived;
+
+            client.connect({
+                onSuccess: onConnect,
+                useSSL: false
+            });
+        }
+
+        function onConnect() {
+            console.log("MQTT Connected.");
+            document.getElementById('systemMessage').innerText = "Trạng thái: Đã kết nối MQTT.";
+            client.subscribe(TOPIC_STATUS);
+        }
+
+        function onConnectionLost(responseObject) {
+            if (responseObject.errorCode !== 0) {
+                console.log("onConnectionLost:" + responseObject.errorMessage);
+                document.getElementById('systemMessage').innerText = "Trạng thái: Mất kết nối, đang thử lại...";
+                setTimeout(connectMQTT, 5000); // Thử kết nối lại sau 5 giây
+            }
+        }
+
+        function onMessageArrived(message) {
+            if (message.destinationName === TOPIC_STATUS) {
+                try {
+                    const data = JSON.parse(message.payloadString);
+                    updateUI(data.gas, data.status);
+                    
+                    // Cập nhật trạng thái cửa nếu hệ thống tự động cưỡng chế mở
+                    if (data.status === 2 && doorState === 0) {
+                        doorState = 1; // Hệ thống buộc mở
+                        updateDoorButton();
+                    }
+                } catch (e) {
+                    console.error("Lỗi phân tích JSON: ", e);
+                }
+            }
+        }
+
+        function updateUI(gas, status) {
+            currentSystemStatus = status;
+
+            // 1. Cập nhật Giá trị Gas
+            document.getElementById('gasValue').innerText = gas;
+
+            // 2. Reset Indicators
+            const indicators = ['safeIndicator', 'warningIndicator', 'dangerIndicator'];
+            indicators.forEach(id => document.getElementById(id).classList.remove('safe', 'warning', 'danger'));
+
+            // 3. Cập nhật Trạng thái Hệ thống
+            let statusText = "Trạng thái: ";
+            if (status === 0) {
+                document.getElementById('safeIndicator').classList.add('safe');
+                statusText += "AN TOÀN";
+                // Cho phép điều khiển cửa
+                document.getElementById('doorButton').classList.remove('door-disabled');
+                document.getElementById('doorButton').disabled = false;
+            } else if (status === 1) {
+                document.getElementById('warningIndicator').classList.add('warning');
+                statusText += "CẢNH BÁO SƠ CẤP!";
+                // Buộc đóng cửa nếu đang ở trạng thái Cảnh báo Sơ cấp (Logic từ code Arduino) [cite: 76]
+                doorState = 0; 
+                updateDoorButton();
+                document.getElementById('doorButton').classList.add('door-disabled');
+                document.getElementById('doorButton').disabled = true;
+            } else if (status === 2) {
+                document.getElementById('dangerIndicator').classList.add('danger');
+                statusText += "NGUY HIỂM!!! Cửa buộc phải mở.";
+                // Buộc mở cửa khi Nguy hiểm [cite: 70]
+                doorState = 1; 
+                updateDoorButton();
+                document.getElementById('doorButton').classList.add('door-disabled');
+                document.getElementById('doorButton').disabled = true;
+            }
+            document.getElementById('systemMessage').innerText = statusText;
+        }
+
+        function updateDoorButton() {
+            const button = document.getElementById('doorButton');
+            button.classList.remove('door-open', 'door-close');
+
+            if (doorState === 1) {
+                button.innerText = "ĐÓNG CỬA";
+                button.classList.add('door-open');
+            } else {
+                button.innerText = "MỞ CỬA";
+                button.classList.add('door-close');
+            }
+        }
+
+        function toggleDoor() {
+            if (currentSystemStatus !== 0) {
+                alert("CẢNH BÁO: Chỉ cho phép điều khiển cửa khi hệ thống ở trạng thái AN TOÀN!");
+                return;
+            }
+
+            const newDoorState = doorState === 0 ? 1 : 0;
+            let command = newDoorState === 1 ? "OPEN" : "CLOSE";
+
+            // Gửi lệnh qua MQTT
+            const message = new Paho.MQTT.Message(command);
+            message.destinationName = TOPIC_CONTROL;
+            client.send(message);
+
+            // Cập nhật trạng thái chờ phản hồi từ ESP32/Arduino
+            doorState = newDoorState;
+            updateDoorButton();
+        }
+
+        // Bắt đầu ứng dụng
+        window.onload = function() {
+            updateDoorButton();
+            connectMQTT();
+        };
+    </script>
+</body>
+</html>
