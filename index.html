@@ -1,0 +1,134 @@
+<script>
+    // --- CẤU HÌNH MQTT MỚI (KHỚP VỚI CLUSTER RIÊNG) ---
+
+    // 1. Thay đổi Broker thành URL Cluster của bạn
+    const MQTT_BROKER = "d79c7374891f4b54b9cf89419bf66043.s1.eu.hivemq.cloud"; 
+
+    // 2. Thay đổi Port thành 8883
+    const MQTT_PORT = 8883; 
+
+    // 3. THÊM THÔNG TIN XÁC THỰC
+    const MQTT_USERNAME = "nhom9"; 
+    const MQTT_PASSWORD = "12345678Aa";
+
+    const TOPIC_STATUS = "gas_alert/status"; 
+    const TOPIC_CONTROL = "gas_alert/control";
+    
+    let client;
+    let doorState = 0; // 0: Đóng, 1: Mở (Mặc định: Đóng)
+    let currentSystemStatus = -1; // -1: Chưa xác định, 0: An toàn, 1: Cảnh báo, 2: Nguy hiểm
+
+    // Hàm kết nối MQTT
+    function connectMQTT() {
+        // Client ID ngẫu nhiên cho Web
+        client = new Paho.MQTT.Client(MQTT_BROKER, Number(MQTT_PORT), "/mqtt", "web_secure_client_" + parseInt(Math.random() * 10000));
+
+        client.onConnectionLost = onConnectionLost;
+        client.onMessageArrived = onMessageArrived;
+
+        // KẾT NỐI SỬ DỤNG SSL/TLS VÀ XÁC THỰC
+        client.connect({
+            onSuccess: onConnect,
+            useSSL: true, // BẬT SSL/TLS
+            userName: MQTT_USERNAME, // THÊM TÊN NGƯỜI DÙNG
+            password: MQTT_PASSWORD // THÊM MẬT KHẨU
+        });
+    }
+
+    function onConnect() {
+        console.log("MQTT Connected.");
+        document.getElementById('systemMessage').innerText = "Trạng thái: Đã kết nối MQTT.";
+        client.subscribe(TOPIC_STATUS);
+    }
+
+    function onConnectionLost(responseObject) {
+        if (responseObject.errorCode !== 0) {
+            console.log("onConnectionLost:" + responseObject.errorMessage);
+            document.getElementById('systemMessage').innerText = "Trạng thái: Mất kết nối, đang thử lại...";
+            setTimeout(connectMQTT, 5000); 
+        }
+    }
+
+    function onMessageArrived(message) {
+        if (message.destinationName === TOPIC_STATUS) {
+            try {
+                const data = JSON.parse(message.payloadString);
+                updateUI(data.gas, data.status);
+                
+                if (data.status === 2 && doorState === 0) {
+                    doorState = 1; 
+                    updateDoorButton();
+                }
+            } catch (e) {
+                console.error("Lỗi phân tích JSON: ", e);
+            }
+        }
+    }
+
+    function updateUI(gas, status) {
+        currentSystemStatus = status;
+
+        document.getElementById('gasValue').innerText = gas;
+
+        const indicators = ['safeIndicator', 'warningIndicator', 'dangerIndicator'];
+        indicators.forEach(id => document.getElementById(id).classList.remove('safe', 'warning', 'danger'));
+
+        let statusText = "Trạng thái: ";
+        if (status === 0) {
+            document.getElementById('safeIndicator').classList.add('safe');
+            statusText += "AN TOÀN.";
+            document.getElementById('doorButton').classList.remove('door-disabled');
+            document.getElementById('doorButton').disabled = false;
+        } else if (status === 1) {
+            document.getElementById('warningIndicator').classList.add('warning');
+            statusText += "CẢNH BÁO SƠ CẤP! Vui lòng kiểm tra.";
+            doorState = 0; 
+            updateDoorButton();
+            document.getElementById('doorButton').classList.add('door-disabled');
+            document.getElementById('doorButton').disabled = true;
+        } else if (status === 2) {
+            document.getElementById('dangerIndicator').classList.add('danger');
+            statusText += "NGUY HIỂM!!! Cửa buộc phải mở.";
+            doorState = 1; 
+            updateDoorButton();
+            document.getElementById('doorButton').classList.add('door-disabled');
+            document.getElementById('doorButton').disabled = true;
+        }
+        document.getElementById('systemMessage').innerText = statusText;
+    }
+
+    function updateDoorButton() {
+        const button = document.getElementById('doorButton');
+        button.classList.remove('door-open', 'door-close');
+
+        if (doorState === 1) {
+            button.innerText = "ĐÓNG CỬA";
+            button.classList.add('door-open');
+        } else {
+            button.innerText = "MỞ CỬA";
+            button.classList.add('door-close');
+        }
+    }
+
+    function toggleDoor() {
+        if (currentSystemStatus !== 0) {
+            alert("CẢNH BÁO: Chỉ cho phép điều khiển cửa khi hệ thống ở trạng thái AN TOÀN!");
+            return;
+        }
+
+        const newDoorState = (doorState === 0 || doorState === -1) ? 1 : 0; 
+        let command = newDoorState === 1 ? "OPEN" : "CLOSE";
+
+        const message = new Paho.MQTT.Message(command);
+        message.destinationName = TOPIC_CONTROL;
+        client.send(message);
+
+        doorState = newDoorState;
+        updateDoorButton();
+    }
+
+    window.onload = function() {
+        updateDoorButton();
+        connectMQTT();
+    };
+</script>
